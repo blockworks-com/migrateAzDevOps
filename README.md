@@ -28,23 +28,23 @@ Powershell script to help with migrating projects from Azure DevOps to Azure Dev
 ### Update Script Variables
 
 1. Notepad migrateDevOps.ps1
-a. Update $sourceOrganization (at top of file)
-b. Update $targetOrganization (at top of file)
-c. Update $projects (at top of file)
+    * Update $sourceOrganization (at top of file)
+    * Update $targetOrganization (at top of file)
+    * Update $projects (at top of file)
 
 ## Run script
 
 1. Open Powershell window. Replace <sourcePAT> and <targetPAT> with the actual PAT strings
 2. Powershell.exe -ExecutionPolicy Bypass -File ./migrateDevOps.ps1 <sourcePAT> <targetPAT>
-a. Monitor the console for errors until it’s done
+    * Monitor the console for errors until it’s done
 3. Verify target is correct
 4. Clean up by removing migration process on Source Azure DevOps.
-a. Go to your project and change the process to back to Agile or Scrum
-b. Right click "Agile-migration" and delete.
-c. Right click "Scrum-migration" and delete.
-d. You can ignore CMMI since it’s probably not used.
+    * Go to your project and change the process to back to Agile or Scrum
+    * Right click "Agile-migration" and delete.
+    * Right click "Scrum-migration" and delete.
+    * You can ignore CMMI since it’s probably not used.
 8. Clean up project on Target Azure DevOps
-a. Go to your project and change the process to back to Agile or Scrum
+    * Go to your project and change the process to back to Agile or Scrum
 9. Inherited processes can be removed after all the migrations are complete
 
 ## Caution
