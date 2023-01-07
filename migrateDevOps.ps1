@@ -548,7 +548,7 @@ try {
                 }
             }
             if (! $success) {
-                Write-Error "Failed to migrate all work items due to max loops"
+                Write-Warning "Failed to migrate all work items due to max loops"
                 Read-Host "Press ENTER to continue or Ctrl-C to stop."
             }
 
