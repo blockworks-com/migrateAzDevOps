@@ -28,7 +28,7 @@ function PromptForOrganization([string] $whichOne) {
             }
         }
         catch {
-            write-host -ForegroundColor Yellow "Invalid since the value entered was less than 20 characters. Please provide a valid PAT."
+            Write-Warning "Invalid since the value entered was less than 20 characters. Please provide a valid PAT."
         }
     }
 
@@ -49,7 +49,7 @@ function PromptForPAT([string] $whichOne) {
             }
         }
         catch {
-            write-host -ForegroundColor Yellow "Invalid since the value entered was less than 20 characters. Please provide a valid PAT."
+            Write-Warning "Invalid since the value entered was less than 20 characters. Please provide a valid PAT."
         }
     }
 
@@ -71,7 +71,7 @@ function PromptIfMigrateProject([string] $projectName) {
             return $false
         }
         else {
-            Write-Host -ForegroundColor Yellow "Invalid response. Please enter 'y' or 'no'."
+            Write-Warning "Invalid response. Please enter 'y' or 'no'."
         }
     }
 
@@ -112,7 +112,7 @@ function LoginAzureDevOps([string]$whichOne, [string]$org, [string]$token) {
         Write-Warning "Project list is empty for $org"
         throw "Failed to connect to $whichOne because project list is empty for $org"
     }
-    Write-Verbose "Successful, projects found."
+    Write-Verbose "Login successful"
 }
 
 function GetListOfProjects([string]$org, [string]$token) {
@@ -342,7 +342,7 @@ try {
             mkdir "$sourceProject" | Out-Null
             pushd "$sourceProject"
             # Migrate git repos
-            # write-host "Step 1: Start migratating repos for `"$sourceProject`""
+            # Write-Verbose "Step 1: Start migratating repos for `"$sourceProject`""
             # $repos = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos list --organization=$sourceOrg --project="""$sourceProject""" | ConvertFrom-Json)
             $repos = (GetListOfRepos $sourceOrg $sourcePAT $sourceProject)
             Write-Verbose "There are $($repos.value.count) repos for `"$sourceProject`""
@@ -354,7 +354,12 @@ try {
                 LoginAzureDevOps "Source" $sourceOrg $sourcePAT
 
                 Write-Verbose "git clone: `"$repoName`""
-                C:\"Program Files"\Git\cmd\git clone --bare --mirror $repo.remoteUrl $repoName
+                if ($verbose) {
+                    C:\"Program Files"\Git\cmd\git clone --bare --mirror --progress --verbose $repo.remoteUrl $repoName
+                }
+                else {
+                    C:\"Program Files"\Git\cmd\git clone --bare --mirror $repo.remoteUrl $repoName 2>&1 | Out-Null
+                }
                 if (! (test-path -PathType container (Join-Path -Path $pwd -ChildPath "$repoName"))) {
                     Write-Error "Folder `"$repoName`" does not exist so clone failed."
                     Read-Host -Prompt "Press ENTER to continue after fatal error."
@@ -372,18 +377,23 @@ try {
                     # TODO: Verify
                 }
                 else {
-                    write-host "Test Only: Mock creating repo `"$repoName`" in Target" #TODO: mimic the creation 
+                    Write-Verbose "Test Only: Mock creating repo `"$repoName`" in Target" #TODO: mimic the creation 
                 }
                 Write-Verbose "Done az create target repo: `"$repoName`""
                 # Write-Verbose "new remote url: "$newRepoInfo.remoteUrl
 
                 Write-Verbose "git push: `"$repoName`""
                 if ($onlyTest -eq $false) {
-                    C:\"Program Files"\Git\cmd\git push --mirror $newRepoInfo.remoteUrl
+                    if ($verbose) {
+                        C:\"Program Files"\Git\cmd\git push --mirror --progress --verbose $newRepoInfo.remoteUrl
+                    }
+                    else {
+                        C:\"Program Files"\Git\cmd\git push --mirror $newRepoInfo.remoteUrl 2>&1 | Out-Null
+                    }
                     # TODO: Verify
                 }
                 else {
-                    write-host "Test Only: Mock git push" #TODO: mimic git push
+                    Write-Verbose "Test Only: Mock git push" #TODO: mimic git push
                 }
                 Write-Verbose "Done git push: `"$repoName`""
                 popd # $repoName
@@ -391,19 +401,24 @@ try {
                 Remove-Item -Recurse -Force "$repoName"
                 Write-Verbose "Done migrate repo: `"$repoName`""
             }
-            # Verify the repos were created 
-            # Login to target org
-            LoginAzureDevOps "Target" $targetOrg $targetPAT
-            $targetRepos = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos list --organization=$targetOrg --project="""$targetProject""" | ConvertFrom-Json)
-            foreach ($repo in $repos) {
-                #TODO: $matches = $repo.name | Where-Object { $targetRepos.Name -eq $_ }
+            if ($onlyTest -eq $false) {
+                # Verify the repos were created 
+                # Login to target org
+                LoginAzureDevOps "Target" $targetOrg $targetPAT
+                $targetRepos = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos list --organization=$targetOrg --project="""$targetProject""" | ConvertFrom-Json)
+                foreach ($repo in $repos) {
+                    #TODO: $matches = $repo.name | Where-Object { $targetRepos.Name -eq $_ }
+                }
+            }
+            else {
+                Write-Verbose "Test Only: Cannot verify repos were created" #TODO: mimic git push
             }
 
             # Logout since we're now done with the az commands
             cmd /c C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az devops logout 2>&1 | Out-Null
             Write-Verbose "Done migratating repos for `"$sourceProject`""
 
-            Write-Verbose "Migratate work items for `"$sourceProject`""
+            Write-Host "Migratate work items for `"$sourceProject`""
             $templateFile = join-path -path $templatePath -childpath "migrateWorkItemsTemplate.json"
             for ($i = 0; $i -le 100000; $i = $i + $workItemBatchSize) {
                 # $count = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az boards query --wiql="select id from workitems where [System.ID] >= $($i) AND [System.WorkItemType] NOT IN ('Test Suite', 'Test Plan','Shared Steps','Shared Parameter','Feedback Request')" --organization=https://dev.azure.com/tmp-blockworkscom/ --project=source2 | ConvertFrom-Json).count
@@ -425,7 +440,7 @@ try {
                         }
                     }
                     else {
-                        write-host "Test Only: Mock migrate work items using $destFile" #TODO: mimic migrate work items
+                        Write-Verbose "Test Only: Mock migrate work items using $destFile" #TODO: mimic migrate work items
                     }
                 }
             }
@@ -439,13 +454,13 @@ try {
                 }
             }
             else {
-                write-host "Test Only: Mock migrate work items using .\migrateWorkItemsRemaining.json" #TODO: mimic migrate work items
+                Write-Verbose "Test Only: Mock migrate work items using .\migrateWorkItemsRemaining.json" #TODO: mimic migrate work items
             }
 
             # TODO: Verify
             Write-Verbose "Done migratating work items for `"$sourceProject`""
 
-            Write-Verbose "Migratate test plans for `"$sourceProject`""
+            Write-Host "Migratate test plans for `"$sourceProject`""
             $templateFile = join-path -path $templatePath -childpath "migrateTestPlansTemplate.json"
             $destFile = (join-path -path $pwd -ChildPath "migrateTestPlans.json")
             UpdateConfigFile $templateFile $destFile
@@ -459,12 +474,12 @@ try {
                 }
             }
             else {
-                write-host "Test Only: Mock migrate test plans using $destFile" #TODO: mimic migrate test plans
+                Write-Verbose "Test Only: Mock migrate test plans using $destFile" #TODO: mimic migrate test plans
             }
             # TODO: Verify
             Write-Verbose "Done migratating test plans for `"$sourceProject`""
 
-            Write-Verbose "Migratate pipelines for `"$sourceProject`""
+            Write-Host "Migratate pipelines for `"$sourceProject`""
             $templateFile = join-path -path $templatePath -childpath "migratePipelinesTemplate.json"
             $destFile = (join-path -path $pwd -ChildPath "migratePipelines.json")
             UpdateConfigFile $templateFile $destFile
@@ -478,7 +493,7 @@ try {
                 }
             }
             else {
-                write-host "Test Only: Mock migrate pipelines using $destFile" #TODO: mimic migrate pipelines
+                Write-Verbose "Test Only: Mock migrate pipelines using $destFile" #TODO: mimic migrate pipelines
             }
             # TODO: Verify
             Write-Verbose "Done migratating pipelines for `"$sourceProject`""
@@ -490,7 +505,8 @@ try {
 
         popd # c:\tools\MigrationTools\
 
-        Write-Host "Cleanup:"
+        Write-Host ""
+        Write-Host "TO-DO:"
         Write-Host "`t1. Delete Personal Access Tokens. Git creates a PAT for Source and Target as well"
         Write-Host "`t2. Delete the _default_ git repo if it's not needed (when each project was created on Target)"
     }
