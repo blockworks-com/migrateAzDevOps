@@ -262,9 +262,12 @@ function QueryRemainingResultCount([string]$org, [string]$token, [string]$projec
 }
 
 function InstallDependencies([string] $whichOne) {
+    $alreadyInstalled = $true
     Write-Verbose "Install dependencies"
+
     # Install Chocolatey if not installed
     if (! (test-path -PathType container "C:\ProgramData\chocolatey\bin")) {
+        $alreadyInstalled = $false
         Write-Verbose "Install Chocolately"
         Set-ExecutionPolicy Bypass -Scope Process -Force; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
         if (! (test-path -PathType container "C:\ProgramData\chocolatey\bin")) {
@@ -276,6 +279,7 @@ function InstallDependencies([string] $whichOne) {
 
     # Install vsts-sync-migrator if not installed
     if (! (test-path -PathType container "c:\tools\MigrationTools\")) {
+        $alreadyInstalled = $false
         Write-Verbose "Install vsts-sync-migrator"
         choco install -y vsts-sync-migrator
         if (! (test-path -PathType container "c:\tools\MigrationTools\")) {
@@ -287,6 +291,7 @@ function InstallDependencies([string] $whichOne) {
 
     # Install git if not installed
     if (! (test-path -PathType container "C:\Program Files\Git\cmd\")) {
+        $alreadyInstalled = $false
         Write-Verbose "Install git"
         choco install -y git
         if (! (test-path -PathType container "C:\Program Files\Git\cmd\")) {
@@ -298,17 +303,21 @@ function InstallDependencies([string] $whichOne) {
 
     # Install azure cli if not installed
     if (! (test-path -PathType container "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\")) {
+        $alreadyInstalled = $false
         Write-Verbose "Install azure-cli"
         choco install -y azure-cli
-        Write-Verbose "Install azure-devopos extension"
+        Start-Sleep 5
         C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az extension add --name azure-devops
+        Start-Sleep 5
         if (! (test-path -PathType container "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\")) {
             Write-Warning "azure-cli still not installed."
             throw "azure-cli not installed"
         }
     }
     Write-Verbose "azure-cli and devops extension Installed"
+
     Write-Verbose "Dependencies Installed"
+    return $alreadyInstalled
 }
 
 
@@ -344,7 +353,11 @@ try {
     }
 
     try {
-        InstallDependencies
+        $alreadyInstalled = InstallDependencies
+        if (! $alreadyInstalled) {
+            Write-Warning "Dependencies had to be installed. You must close and open a new Powershell and run the script again. Exit"
+            return 1
+        }
     }
     catch {
         throw "Failed to install dependencies. Error: $_"
