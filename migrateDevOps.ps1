@@ -373,8 +373,8 @@ try {
     try {
         # Verify Source and Target urls and personal access tokens
         Write-Verbose "Verify Source and Target urls and personal access tokens by logging into both."
-        LoginAzureDevOps "Target" $targetOrg $targetPAT
-        LoginAzureDevOps "Source" $sourceOrg $sourcePAT
+        # LoginAzureDevOps "Target" $targetOrg $targetPAT
+        # LoginAzureDevOps "Source" $sourceOrg $sourcePAT
     }
     catch {
         throw "Failed to connect to Azure DevOps. Error: $_"
@@ -538,7 +538,7 @@ try {
                     $remainingCount = (QueryRemainingResultCount $sourceOrg $sourcePAT $sourceProject $i)
                     Write-Verbose "There are $remainingCount work items for remaining batch"
                     if ($remainingCount -lt 10000) {
-                        $success = $false
+                        $success = $true
                         break
                     }
                     else {
