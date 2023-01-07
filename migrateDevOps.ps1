@@ -1,6 +1,6 @@
-param([string]$sourceOrg, [string]$targetOrg, 
-    [string]$sourcePAT, [string]$targetPAT, 
-    [switch]$verbose = $false)
+param([string]$sourceOrg, [string]$sourcePAT, 
+    [string]$targetOrg, [string]$targetPAT, 
+    [switch]$getProjectList = $false, [switch]$verbose = $false, [switch]$test = $false)
 
 #####################################
 # Variables
@@ -13,7 +13,6 @@ $projects = @(
 
 # Can leave as defaults
 $workItemBatchSize = 5000
-$test = $false
 $templatePath = "$pwd"
 
 function PromptForOrganization([string] $whichOne) {
@@ -58,6 +57,28 @@ function PromptForPAT([string] $whichOne) {
     throw "Invalid $whichOne Personal Access Token"
 }
 
+function PromptIfMigrateProject([string] $projectName) {
+    $i = 0
+    while ($i -lt 3) {
+        $i++
+        $answer = Read-Host -Prompt "Should $projectName be migrated (y/n)?"
+        if ($answer.Equals('y')) { 
+            Write-Verbose "Migrate $($projectName): $answer"
+            return $true 
+        }
+        elseif ($answer.Equals('n')) { 
+            Write-Verbose "Migrate $($projectName): $answer"
+            return $false
+        }
+        else {
+            Write-Host -ForegroundColor Yellow "Invalid response. Please enter 'y' or 'no'."
+        }
+    }
+
+    Write-Warning "You entered an invalid Azure DevOps Organization/Collection three times."
+    throw "Invalid $whichOne Organization/Collection"
+}
+
 function UpdateConfigFile([string] $templateFile, [string] $destFile) {
     Write-Verbose "Update config file $destFile"
     Copy-Item $templateFile $destFile
@@ -92,6 +113,52 @@ function LoginAzureDevOps([string]$whichOne, [string]$org, [string]$token) {
         throw "Failed to connect to $whichOne because project list is empty for $org"
     }
     Write-Verbose "Successful, projects found."
+}
+
+function GetListOfProjects([string]$org, [string]$token) {
+    Write-Verbose "Query $org for list of projects" 
+
+    try {
+        # Create header with PAT
+        $encodedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$($token)"))
+        $header = @{authorization = "Basic $encodedToken" }
+
+        # Get the list of all projects in the organization
+        $projectsUrl = "$org/_apis/projects?api-version=7.0"
+        $result = Invoke-RestMethod -Uri $projectsUrl -Method Get -ContentType "application/json" -Headers $header
+        foreach ($tmpProject in $result.value) {
+            Write-Verbose "$($tmpProject.id) $($tmpProject.name)"
+        }
+
+        Write-Verbose "Done querying for list of projects" 
+        return $result
+    }
+    catch {
+        throw "Azure DevOps API call failed. $_"
+    }
+}
+
+function GetListOfRepos([string]$org, [string]$token, [string]$project) {
+    Write-Verbose "Query $org for list of repositories for project $project" 
+
+    try {
+        # Create header with PAT
+        $encodedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$($token)"))
+        $header = @{authorization = "Basic $encodedToken" }
+
+        # Get the list of all repos in the project
+        $reposUrl = "$org/" + [uri]::EscapeDataString($project) + "/_apis/git/repositories?api-version=7.0"
+        $result = Invoke-RestMethod -Uri $reposUrl -Method Get -ContentType "application/json" -Headers $header
+        foreach ($tmpRepo in $result.value) {
+            Write-Verbose "$($tmpRepo.id) $($tmpRepo.name)"
+        }
+
+        Write-Verbose "Done querying for list of repositories" 
+        return $result
+    }
+    catch {
+        throw "Azure DevOps API call failed. $_"
+    }
 }
 
 function InstallDependencies([string] $whichOne) {
@@ -154,6 +221,20 @@ if ($verbose) {
     $VerbosePreference = "continue" 
     Write-Verbose "Verbose on"
 }
+[bool]$onlyProjectList = $false
+switch ($getProjectList) {    
+    $true {
+        $onlyProjectList = $true
+        Write-Verbose "Get Source Project List is true"
+    }    
+}
+[bool]$onlyTest = $false
+switch ($test) {    
+    $true {
+        $onlyTest = $true
+        Write-Verbose "Test only without making migrating"
+    }    
+}
 
 try {
     # Verify valid template folder
@@ -199,180 +280,214 @@ try {
         throw "Failed to connect to Azure DevOps. Error: $_"
     }
 
-    try {
-        # Make sure we are logged into the Source before proceeding
-        LoginAzureDevOps "Source" $sourceOrg $sourcePAT
+    if ($onlyProjectList) {
+        Write-Verbose "Retrieve project list and exit" 
+        $projectList = (GetListOfProjects $sourceOrg $sourcePAT)
+        $strProjectList = "`$projects = @(`n"
+        foreach ($project in $projectList.value) {
+            $strProjectList += "`t[pscustomobject]@{source = `"$($project.name)`"; target = `"`" },`n"
+        }
+        $strProjectList += ")"
+        $strProjectList = $strProjectList.Replace("},`n)", "}`n)")
+        Write-Host $strProjectList
     }
-    catch {
-        throw "Failed to connect to Azure DevOps. Error: $_"
-    }
-
-    # Do the migrations
-    pushd "c:\tools\MigrationTools\"
-    foreach ($project in $projects) {
-        # NOTE: ALWAYS migrate code first before migrating work items so the links are fixed.
-        $sourceProject = $project.source
-        if ([string]::IsNullOrWhiteSpace($targetProject)) {
-            # default to be the same as the source project name
-            Write-Verbose "Target project defaulting to the same name as source for project $sourceProject."
-            $targetProject = $project.source
-        }
-        else {
-            $targetProject = $project.target
-        }
-        write-host "*** PROJECT: $sourceProject"
-
-        if (Test-Path $sourceProject) {
-            Remove-Item $sourceProject -Force
-        }
-        mkdir $sourceProject | Out-Null
-        pushd $sourceProject
-        # Migrate git repos
-        # write-host "Step 1: Start migratating repos for $sourceProject"
-        # $repos = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos list --organization=$sourceOrg --project="""$sourceProject""" | ConvertFrom-Json)
-        $repos = (GetListOfRepos $sourceOrg $sourcePAT $sourceProject)
-        write-host "... there are $($repos.value.count) git repos for $sourceProject"
-        foreach ($repo in $repos.value) {
-            $repoName = $repo.name
-            write-host "Step 1a: Migrate repo: $repoName"
-
-            # Login to source org
+    else {
+        try {
+            # Make sure we are logged into the Source before proceeding
             LoginAzureDevOps "Source" $sourceOrg $sourcePAT
+        }
+        catch {
+            throw "Failed to connect to Azure DevOps. Error: $_"
+        }
 
-            write-host "... git clone: $repoName"
-            if ($test -ne $true) {
-                C:\"Program Files"\Git\cmd\git clone --bare --mirror $repo.remoteUrl $repoName
+        if ($projects.count -le 0) {
+            Write-Verbose "Project List is empty. Query source for list of projects" 
+            $projectList = (GetListOfProjects $sourceOrg $sourcePAT)
+            foreach ($project in $projectList.value) {
+                Write-Verbose "Project: $($project.name)"
+                if (PromptIfMigrateProject $project.name) {
+                    Write-Host "Migrate $($project.name)"
+                    $obj = New-Object psobject
+                    $obj | Add-Member -type NoteProperty -name "source" -Value "$($project.name)"
+                    $obj | Add-Member -type NoteProperty -name "target" -Value ""
+                    $projects += $obj
+                }
             }
-            else { mkdir $repoName | Out-Null }
-            if (! (test-path -PathType container (Join-Path -Path $pwd -ChildPath "$repoName"))) {
-                Write-Error "Folder $repoName does not exist so clone failed."
-                Read-Host -Prompt "Press ENTER to continue after fatal error."
+        }
+
+        Write-Verbose "There are $($projects.count) projects to migrate. Show list:"
+        foreach ($p in $projects) {
+            Write-Verbose $p.source
+        }
+        Write-Verbose "Done showing list of projects to migrate"
+
+        # Do the migrations
+        pushd "c:\tools\MigrationTools\"
+        foreach ($project in $projects) {
+            # NOTE: ALWAYS migrate code first before migrating work items so the links are fixed.
+            $sourceProject = $project.source
+            if ([string]::IsNullOrWhiteSpace($targetProject)) {
+                # default to be the same as the source project name
+                Write-Verbose "Target project defaulting to the same name as source for project $sourceProject."
+                $targetProject = $project.source
             }
-            write-host "...Done git clone $repoName"
+            else {
+                $targetProject = $project.target
+            }
+            write-host "*** PROJECT: $sourceProject"
 
-            pushd $repoName
+            if (Test-Path $sourceProject) {
+                Remove-Item $sourceProject -Force
+            }
+            mkdir $sourceProject | Out-Null
+            pushd $sourceProject
+            # Migrate git repos
+            # write-host "Step 1: Start migratating repos for $sourceProject"
+            # $repos = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos list --organization=$sourceOrg --project="""$sourceProject""" | ConvertFrom-Json)
+            $repos = (GetListOfRepos $sourceOrg $sourcePAT $sourceProject)
+            write-host "... there are $($repos.value.count) git repos for $sourceProject"
+            foreach ($repo in $repos.value) {
+                $repoName = $repo.name
+                write-host "Step 1a: Migrate repo: $repoName"
+                
+                # Login to source org
+                LoginAzureDevOps "Source" $sourceOrg $sourcePAT
 
+                write-host "... git clone: $repoName"
+                if ($onlyTest -ne $true) {
+                    C:\"Program Files"\Git\cmd\git clone --bare --mirror $repo.remoteUrl $repoName
+                }
+                else { mkdir $repoName | Out-Null }
+                if (! (test-path -PathType container (Join-Path -Path $pwd -ChildPath "$repoName"))) {
+                    Write-Error "Folder $repoName does not exist so clone failed."
+                    Read-Host -Prompt "Press ENTER to continue after fatal error."
+                }
+                write-host "...Done git clone $repoName"
+
+                pushd $repoName
+
+                # Login to target org
+                LoginAzureDevOps "Target" $targetOrg $targetPAT
+
+                write-host "... az create target repo: $repoName"
+                if ($onlyTest -ne $true) {
+                    $newRepoInfo = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos create --name="""$repoName""" --organization=$targetOrg --project=$targetProject | ConvertFrom-Json)
+                }
+                else {
+                    write-host "mimic repo creation" #TODO: mimic the creation 
+                }
+                # TODO: Verify
+                write-host "...Done az create target repo: $repoName"
+                # write-host "new remote url: "$newRepoInfo.remoteUrl
+
+                write-host "... git push: $repoName"
+                if ($onlyTest -ne $true) {
+                    C:\"Program Files"\Git\cmd\git push --mirror $newRepoInfo.remoteUrl
+                }
+                else {
+                    write-host "mimic git push" #TODO: mimic git push
+                }
+                # TODO: Verify
+                write-host "... Done git push: $repoName"
+                popd # $repoName
+
+                Remove-Item -Recurse -Force $repoName
+                write-host "Done migrate repo: $repoName"
+            }
+            # Verify the repos were created 
             # Login to target org
             LoginAzureDevOps "Target" $targetOrg $targetPAT
+            $targetRepos = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos list --organization=$targetOrg --project="""$targetProject""" | ConvertFrom-Json)
+            foreach ($repo in $repos) {
+                #TODO: $matches = $repo.name | Where-Object { $targetRepos.Name -eq $_ }
+            }
 
-            write-host "... az create target repo: $repoName"
-            if ($test -ne $true) {
-                $newRepoInfo = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos create --name="""$repoName""" --organization=$targetOrg --project=$targetProject | ConvertFrom-Json)
+            # Logout since we're now done with the az commands
+            cmd /c C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az devops logout
+            write-host "Done migratating repos for $sourceProject"
+
+            write-host "Step 2: Start migratating work items for $sourceProject"
+            for ($i = 0; $i -le 100000; $i = $i + $workItemBatchSize) {
+                # $count = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az boards query --wiql="select id from workitems where [System.ID] >= $($i) AND [System.WorkItemType] NOT IN ('Test Suite', 'Test Plan','Shared Steps','Shared Parameter','Feedback Request')" --organization=https://dev.azure.com/tmp-blockworkscom/ --project=source2 | ConvertFrom-Json).count
+                $count = 1 # TODO: figure out how many work items there are in total to avoid running so many times
+                if ($count -gt 0) {
+                    $templateFile = join-path -path $templatePath -childpath "migrateWorkItemsTemplate.json"
+                    UpdateConfigFile $templateFile (join-path -path $pwd -ChildPath "migrateWorkItems$($i).json")
+                    UpdateConfigFile $templateFile ".\migrateWorkItemsRemaining.json"
+                }
+                if ($onlyTest -ne $true) {
+                    write-host "...migrate work items using $destFile"
+                    c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
+                    if ($? -ne $true) { 
+                        Write-Error "ERROR found step 191!!! Exit"
+                        Read-Host "Press ENTER to continue or Ctrl-C to stop."
+                        #            } else {
+                        #                if ($result -like "*0 Work Items*") {
+                        #                    break
+                        #                }
+                    }
+                }
+                else {
+                    write-host "...mimic migrate work items" #TODO: mimic migrate work items
+                }
             }
-            else {
-                write-host "mimic repo creation" #TODO: mimic the creation 
+            write-host "*** Import Remaining Work Items"
+            write-host "...migrate work items using .\migrateWorkItemsRemaining.json"
+            c:\tools\MigrationTools\migration.exe execute --config .\migrateWorkItemsRemaining.json 2>&1 | Tee-Object -Variable result
+            if ($? -ne $true) { 
+                Write-Error "ERROR found step 204!!! Exit"
+                Read-Host "Press ENTER to continue or Ctrl-C to stop."
             }
+
             # TODO: Verify
-            write-host "...Done az create target repo: $repoName"
-            # write-host "new remote url: "$newRepoInfo.remoteUrl
+            write-host "Done migratating work items for $sourceProject"
 
-            write-host "... git push: $repoName"
-            if ($test -ne $true) {
-                C:\"Program Files"\Git\cmd\git push --mirror $newRepoInfo.remoteUrl
-            }
-            else {
-                write-host "mimic git push" #TODO: mimic git push
-            }
-            # TODO: Verify
-            write-host "... Done git push: $repoName"
-            popd # $repoName
+            write-host "Step 3: Start migratating test plans for $sourceProject"
+            $templateFile = join-path -path $templatePath -childpath "migrateTestPlansTemplate.json"
+            UpdateConfigFile $templateFile (join-path -path $pwd -ChildPath "migrateTestPlans.json")
 
-            Remove-Item -Recurse -Force $repoName
-            write-host "Done migrate repo: $repoName"
-        }
-        # Verify the repos were created 
-        # Login to target org
-        LoginAzureDevOps "Target" $targetOrg $targetPAT
-        $targetRepos = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az repos list --organization=$targetOrg --project="""$targetProject""" | ConvertFrom-Json)
-        foreach ($repo in $repos) {
-            #TODO: $matches = $repo.name | Where-Object { $targetRepos.Name -eq $_ }
-        }
-
-        # Logout since we're now done with the az commands
-        cmd /c C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az devops logout
-        write-host "Done migratating repos for $sourceProject"
-
-        write-host "Step 2: Start migratating work items for $sourceProject"
-        for ($i = 0; $i -le 100000; $i = $i + $workItemBatchSize) {
-            # $count = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az boards query --wiql="select id from workitems where [System.ID] >= $($i) AND [System.WorkItemType] NOT IN ('Test Suite', 'Test Plan','Shared Steps','Shared Parameter','Feedback Request')" --organization=https://dev.azure.com/tmp-blockworkscom/ --project=source2 | ConvertFrom-Json).count
-            $count = 1 # TODO: figure out how many work items there are in total to avoid running so many times
-            if ($count -gt 0) {
-                $templateFile = join-path -path $templatePath -childpath "migrateWorkItemsTemplate.json"
-                UpdateConfigFile $templateFile (join-path -path $pwd -ChildPath "migrateWorkItems$($i).json")
-                UpdateConfigFile $templateFile ".\migrateWorkItemsRemaining.json"
-            }
-            if ($test -ne $true) {
-                write-host "...migrate work items using $destFile"
+            if ($onlyTest -ne $true) {
+                write-host "...migrate test plans using $destFile"
                 c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
                 if ($? -ne $true) { 
-                    Write-Error "ERROR found step 191!!! Exit"
+                    Write-Error "ERROR found step 227!!! Exit"
                     Read-Host "Press ENTER to continue or Ctrl-C to stop."
-                    #            } else {
-                    #                if ($result -like "*0 Work Items*") {
-                    #                    break
-                    #                }
                 }
             }
             else {
-                write-host "...mimic migrate work items" #TODO: mimic migrate work items
+                write-host "mimic migrate test plans" #TODO: mimic migrate test plans
             }
-        }
-        write-host "*** Import Remaining Work Items"
-        write-host "...migrate work items using .\migrateWorkItemsRemaining.json"
-        c:\tools\MigrationTools\migration.exe execute --config .\migrateWorkItemsRemaining.json 2>&1 | Tee-Object -Variable result
-        if ($? -ne $true) { 
-            Write-Error "ERROR found step 204!!! Exit"
-            Read-Host "Press ENTER to continue or Ctrl-C to stop."
-        }
+            # TODO: Verify
+            write-host "Done migratating test plans for $sourceProject"
 
-        # TODO: Verify
-        write-host "Done migratating work items for $sourceProject"
+            write-host "Step 4: Start migratating pipelines for $sourceProject"
+            $templateFile = join-path -path $templatePath -childpath "migratePipelinesTemplate.json"
+            UpdateConfigFile $templateFile (join-path -path $pwd -ChildPath "migratePipelines.json")
 
-        write-host "Step 3: Start migratating test plans for $sourceProject"
-        $templateFile = join-path -path $templatePath -childpath "migrateTestPlansTemplate.json"
-        UpdateConfigFile $templateFile (join-path -path $pwd -ChildPath "migrateTestPlans.json")
-
-        if ($test -ne $true) {
-            write-host "...migrate test plans using $destFile"
-            c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
-            if ($? -ne $true) { 
-                Write-Error "ERROR found step 227!!! Exit"
-                Read-Host "Press ENTER to continue or Ctrl-C to stop."
+            if ($onlyTest -ne $true) {
+                write-host "...migrate pipelines using $destFile"
+                c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
+                if ($? -ne $true) { 
+                    Write-Error "ERROR found step 252!!! Exit"
+                    Read-Host "Press ENTER to continue or Ctrl-C to stop."
+                }
             }
-        }
-        else {
-            write-host "mimic migrate test plans" #TODO: mimic migrate test plans
-        }
-        # TODO: Verify
-        write-host "Done migratating test plans for $sourceProject"
-
-        write-host "Step 4: Start migratating pipelines for $sourceProject"
-        $templateFile = join-path -path $templatePath -childpath "migratePipelinesTemplate.json"
-        UpdateConfigFile $templateFile (join-path -path $pwd -ChildPath "migratePipelines.json")
-
-        if ($test -ne $true) {
-            write-host "...migrate pipelines using $destFile"
-            c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
-            if ($? -ne $true) { 
-                Write-Error "ERROR found step 252!!! Exit"
-                Read-Host "Press ENTER to continue or Ctrl-C to stop."
+            else {
+                write-host "mimic migrated pipelines" #TODO: mimic migrate pipelines
             }
-        }
-        else {
-            write-host "mimic migrated pipelines" #TODO: mimic migrate pipelines
-        }
-        # TODO: Verify
-        write-host "Done migratating pipelines for $sourceProject"
+            # TODO: Verify
+            write-host "Done migratating pipelines for $sourceProject"
 
-        popd # $sourceProject
-        Remove-Item -Recurse -Force "$sourceProject"
-        write-host "Done migratating $sourceProject"
+            popd # $sourceProject
+            Remove-Item -Recurse -Force "$sourceProject"
+            write-host "Done migratating $sourceProject"
+        }
+
+        popd # c:\tools\MigrationTools\
+
+        Write-Host "You will need to delete empty default git repos for the target projects. It may not needed after the migration."
+        # Read-Host "Press ENTER to continue. This is the last step."
     }
-
-    popd # c:\tools\MigrationTools\
-
-    Write-Host "You will need to delete empty default git repos for the target projects. It may not needed after the migration."
-    # Read-Host "Press ENTER to continue. This is the last step."
 }
 catch {
     Write-Error "Failed with error: $_"
