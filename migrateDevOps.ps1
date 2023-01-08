@@ -23,14 +23,14 @@ if ($verbose) {
     $VerbosePreference = "continue" 
     Write-Verbose "Verbose on"
 }
-[bool]$onlyProjectList = $true
+[bool]$onlyProjectList = $false
 switch ($getProjectList) {    
     $true {
         $onlyProjectList = $true
         Write-Verbose "Get Source Project List is true"
     }    
 }
-[bool]$onlyTest = $true
+[bool]$onlyTest = $false
 switch ($test) {    
     $true {
         $onlyTest = $true
@@ -39,8 +39,16 @@ switch ($test) {
 }
 if ($projects.Length -gt 0) {
     # projects were passed as a parameter so convert from json string
-    $projectsArray = $projects | ConvertFrom-Json
-    Write-Verbose "Projects passed as parameter converted to array containing $($projectsArray.Length) projects"
+    try {
+        $projectsArray = $projects | ConvertFrom-Json
+        Write-Verbose "Projects passed as parameter converted to array containing $($projectsArray.Length) projects"
+    }
+    catch {
+        Write-Warning "Invalid projects parameter. Fix the parameter json string. Follow this syntax:"
+        Write-Warning "-projects '[{`"`"`"source`"`"`": `"`"`"source3-agile`"`"`", `"`"`"target`"`"`": `"`"`"`"`"`"},{`"`"`"source2-scrum`"`"`": `"`"`"target2-scrum`"`"`", `"`"`"target`"`"`": `"`"`"`"`"`"}]'"
+        Write-Error "Failed to convert projects parameter to an array. EXIT"
+        return 0
+    }
 }
 
 function PromptForOrganization([string] $whichOne) {
@@ -164,11 +172,34 @@ function GetListOfProjects([string]$org, [string]$token) {
         # Get the list of all projects in the organization
         $projectsUrl = "$org/_apis/projects?api-version=7.0"
         $result = Invoke-RestMethod -Uri $projectsUrl -Method Get -ContentType "application/json" -Headers $header
-        foreach ($tmpProject in $result.value) {
-            Write-Verbose "$($tmpProject.id) $($tmpProject.name)"
+
+        if ($verbose) {
+            foreach ($tmpProject in $result.value) {
+                Write-Verbose "$($tmpProject.id) $($tmpProject.name)"
+            }
         }
 
         Write-Verbose "Done querying for list of projects" 
+        return $result
+    }
+    catch {
+        throw "Azure DevOps API call failed. $_"
+    }
+}
+
+function GetProjectDetails([string]$org, [string]$token, [string]$project) {
+    Write-Verbose "Get details for project `"$project`" in $org" 
+
+    try {
+        # Create header with PAT
+        $encodedToken = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$($token)"))
+        $header = @{authorization = "Basic $encodedToken" }
+
+        # Get project details
+        $projectUrl = "$org/_apis/projects/" + [uri]::EscapeDataString($project) + "?api-version=7.0"
+        $result = Invoke-RestMethod -Uri $projectUrl -Method Get -ContentType "application/json" -Headers $header
+
+        Write-Verbose "Done getting project details"
         return $result
     }
     catch {
@@ -187,8 +218,11 @@ function GetListOfRepos([string]$org, [string]$token, [string]$project) {
         # Get the list of all repos in the project
         $reposUrl = "$org/" + [uri]::EscapeDataString($project) + "/_apis/git/repositories?api-version=7.0"
         $result = Invoke-RestMethod -Uri $reposUrl -Method Get -ContentType "application/json" -Headers $header
-        foreach ($tmpRepo in $result.value) {
-            Write-Verbose "$($tmpRepo.id) $($tmpRepo.name)"
+
+        if ($verbose) {
+            foreach ($tmpRepo in $result.value) {
+                Write-Verbose "$($tmpRepo.id) $($tmpRepo.name)"
+            }
         }
 
         Write-Verbose "Done querying for list of repositories" 
@@ -329,20 +363,20 @@ function InstallDependencies([string] $whichOne) {
     }
     Write-Verbose "git Installed"
 
-    # Install azure cli if not installed
-    if (! (test-path -PathType container "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\")) {
-        $alreadyInstalled = $false
-        Write-Verbose "Install azure-cli"
-        choco install -y azure-cli
-        Start-Sleep 5
-        C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az extension add --name azure-devops
-        Start-Sleep 5
-        if (! (test-path -PathType container "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\")) {
-            Write-Warning "azure-cli still not installed."
-            throw "azure-cli not installed"
-        }
-    }
-    Write-Verbose "azure-cli and devops extension Installed"
+    # # Install azure cli if not installed
+    # if (! (test-path -PathType container "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\")) {
+    #     $alreadyInstalled = $false
+    #     Write-Verbose "Install azure-cli"
+    #     choco install -y azure-cli
+    #     Start-Sleep 5
+    #     C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az extension add --name azure-devops
+    #     Start-Sleep 5
+    #     if (! (test-path -PathType container "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\")) {
+    #         Write-Warning "azure-cli still not installed."
+    #         throw "azure-cli not installed"
+    #     }
+    # }
+    # Write-Verbose "azure-cli and devops extension Installed"
 
     Write-Verbose "Dependencies Installed"
     return $alreadyInstalled
@@ -363,10 +397,10 @@ try {
 
     try {
         $alreadyInstalled = InstallDependencies
-        if (! $alreadyInstalled) {
-            Write-Warning "Dependencies had to be installed. You must close and open a new Powershell and run the script again. Exit"
-            return 1
-        }
+        # if (! $alreadyInstalled) {
+        #     Write-Warning "Dependencies had to be installed. You must close and open a new Powershell and run the script again. Exit"
+        #     return 1
+        # }
     }
     catch {
         throw "Failed to install dependencies. Error: $_"
@@ -416,7 +450,7 @@ try {
     else {
         try {
             # Make sure we are logged into the Source before proceeding
-            LoginAzureDevOps "Source" $sourceOrg $sourcePAT
+            # LoginAzureDevOps "Source" $sourceOrg $sourcePAT
         }
         catch {
             throw "Failed to connect to Azure DevOps. Error: $_"
@@ -437,18 +471,60 @@ try {
             }
         }
 
-        Write-Verbose "There are $($projectsArray.count) projects to migrate. Show list:"
-        foreach ($p in $projectsArray) {
-            Write-Verbose "`"$p.source`""
+        if ($verbose) {
+            Write-Verbose "There are $($projectsArray.count) projects to migrate. Show list:"
+            foreach ($p in $projectsArray) {
+                Write-Verbose "`"$($p.source)`""
+            }
+            Write-Verbose "Done showing list of projects to migrate"
         }
-        Write-Verbose "Done showing list of projects to migrate"
+
+        # Verify project exists in both Source and Target
+        # Do this before the main loop so we find errors before the real work begins
+        $success = $true
+        foreach ($project in $projectsArray) {
+            $sourceProject = $project.source
+            if ([string]::IsNullOrWhiteSpace($project.target)) {
+                # default to be the same as the source project name
+                Write-Verbose "Target project defaulting to the same name as source for project `"$sourceProject`""
+                $targetProject = $project.source
+            }
+            else {
+                $targetProject = $project.target
+            }
+            try {
+                Write-Verbose "Verify `"$sourceProject`" in Source"
+                GetProjectDetails $sourceOrg $sourcePAT $sourceProject | Out-Null
+                Write-Verbose "`"$sourceProject`" does exist in Source"
+            }
+            catch {
+                $success = $false 
+                Write-Warning "`"$sourceProject`" does not exist in $sourceOrg"
+            }
+            try {
+                Write-Verbose "Verify `"$targetProject`" in Target"
+                GetProjectDetails $targetOrg $targetPAT $targetProject | Out-Null
+                Write-Verbose "`"$targetProject`" does exist in Target"
+            }
+            catch { 
+                $success = $false 
+                Write-Warning "`"$targetProject`" does not exist in $targetOrg"
+            }
+        }
+        if (! $success) {
+            Write-Verbose "One or more projects does not exist in both Source and Target."
+            throw "One or more projects does not exist in both Source and Target."
+        }
+        else {
+            Write-Verbose "All projects exist in both Source and Target"
+        }
 
         # Do the migrations
         pushd "c:\tools\MigrationTools\"
         foreach ($project in $projectsArray) {
             # NOTE: ALWAYS migrate code first before migrating work items so the links are fixed.
             $sourceProject = $project.source
-            if ([string]::IsNullOrWhiteSpace($targetProject)) {
+            if ([string]::IsNullOrWhiteSpace($project.target)) {
                 # default to be the same as the source project name
                 Write-Verbose "Target project defaulting to the same name as source for project `"$sourceProject`""
                 $targetProject = $project.source
@@ -471,14 +547,14 @@ try {
                 write-host "Migrate repo: `"$repoName`""
                 
                 # Login to source org
-                LoginAzureDevOps "Source" $sourceOrg $sourcePAT
+                # LoginAzureDevOps "Source" $sourceOrg $sourcePAT
 
                 Write-Verbose "git clone: `"$repoName`""
                 if ($verbose) {
-                    C:\"Program Files"\Git\cmd\git clone --bare --mirror --progress --verbose $repo.remoteUrl $repoName
+                    C:\"Program Files"\Git\cmd\git.exe clone --bare --mirror --progress --verbose $repo.remoteUrl $repoName
                 }
                 else {
-                    C:\"Program Files"\Git\cmd\git clone --bare --mirror $repo.remoteUrl $repoName 2>&1 | Out-Null
+                    C:\"Program Files"\Git\cmd\git.exe clone --bare --mirror $repo.remoteUrl $repoName 2>&1 | Out-Null
                 }
                 if (! (test-path -PathType container (Join-Path -Path $pwd -ChildPath "$repoName"))) {
                     Write-Error "Folder `"$repoName`" does not exist so clone failed."
@@ -489,7 +565,7 @@ try {
                 pushd "$repoName"
 
                 # Login to target org
-                LoginAzureDevOps "Target" $targetOrg $targetPAT
+                # LoginAzureDevOps "Target" $targetOrg $targetPAT
 
                 Write-Verbose "Create target repo: `"$repoName`""
                 if ($onlyTest -eq $false) {
@@ -498,20 +574,21 @@ try {
                 else {
                     Write-Verbose "Test Only: Mock creating repo `"$repoName`" in Target"
                 }
-                Write-Verbose "Done az create target repo: `"$repoName`""
+                Write-Verbose "Done creating target repo: `"$repoName`""
 
                 Write-Verbose "git push: `"$repoName`""
                 if ($onlyTest -eq $false) {
                     if ($verbose) {
-                        C:\"Program Files"\Git\cmd\git push --mirror --progress --verbose $newRepoInfo.remoteUrl
+                        C:\"Program Files"\Git\cmd\git.exe push --mirror --progress --verbose $newRepoInfo.remoteUrl
                     }
                     else {
-                        C:\"Program Files"\Git\cmd\git push --mirror $newRepoInfo.remoteUrl 2>&1 | Out-Null
+                        C:\"Program Files"\Git\cmd\git.exe push --mirror $newRepoInfo.remoteUrl 2>&1 | Out-Null
                     }
                     # Verify
+                    Start-Sleep 1 # allow DevOps to recognize the git push
                     $newRepoDetails = (GetRepoDetails $targetOrg $targetPAT $targetProject $repoName)
                     if ($newRepoDetails.size -ne $repo.size) {
-                        Write-Warning "Size difference between original and new repo `"$repoName`""
+                        Write-Warning "Size difference between original and new repo `"$repoName`". Source size = $($repo.size) and Target size = $($newRepoDetails.size)"
                         Read-Host "Press ENTER to continue or Ctrl-C to break"
                     }
                 }
