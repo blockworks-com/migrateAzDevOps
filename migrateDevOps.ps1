@@ -1,19 +1,47 @@
 param([string]$sourceOrg, [string]$sourcePAT, 
     [string]$targetOrg, [string]$targetPAT, 
+    [string]$projects,
     [switch]$getProjectList = $false, [switch]$verbose = $false, [switch]$test = $false)
 
 #####################################
 # Variables
 #####################################
-# MUST CHANGE
-# If blank, user will be prompt for each project in Source
-$projects = @(
-    [pscustomobject]@{source = "source3-agile"; target = "" }
-)
+$projectsArray = $null
+# 1. Pass project list via command line with: -projects '[{"""source""": """source3-agile""", """target""": """"""},{"""source2-scrum""": """target2-scrum""", """target""": """"""}]'
+# 2. Or add the project list here: $projectsArray = @([pscustomobject]@{source = "source3-agile"; target = "" })
+# 3. If both are blank, user will be prompt for each project in Source
 
 # Can leave as defaults
 $workItemBatchSize = 5000
 $templatePath = "$pwd"
+
+#####################################
+# Commandline
+#####################################
+$originalVerbose = $VerbosePreference
+if ($verbose) {
+    $VerbosePreference = "continue" 
+    Write-Verbose "Verbose on"
+}
+[bool]$onlyProjectList = $true
+switch ($getProjectList) {    
+    $true {
+        $onlyProjectList = $true
+        Write-Verbose "Get Source Project List is true"
+    }    
+}
+[bool]$onlyTest = $true
+switch ($test) {    
+    $true {
+        $onlyTest = $true
+        Write-Verbose "Test only without migrating"
+    }    
+}
+if ($projects.Length -gt 0) {
+    # projects were passed as a parameter so convert from json string
+    $projectsArray = $projects | ConvertFrom-Json
+    Write-Verbose "Projects passed as parameter converted to array containing $($projectsArray.Length) projects"
+}
 
 function PromptForOrganization([string] $whichOne) {
     $i = 0
@@ -325,25 +353,6 @@ function InstallDependencies([string] $whichOne) {
 # MAIN
 #####################################
 $originalEnvAzureDevOpsExtPAT = $env:AZURE_DEVOPS_EXT_PAT
-$originalVerbose = $VerbosePreference
-if ($verbose) {
-    $VerbosePreference = "continue" 
-    Write-Verbose "Verbose on"
-}
-[bool]$onlyProjectList = $false
-switch ($getProjectList) {    
-    $true {
-        $onlyProjectList = $true
-        Write-Verbose "Get Source Project List is true"
-    }    
-}
-[bool]$onlyTest = $false
-switch ($test) {    
-    $true {
-        $onlyTest = $true
-        Write-Verbose "Test only without migrating"
-    }    
-}
 
 try {
     # Verify valid template folder
@@ -413,7 +422,7 @@ try {
             throw "Failed to connect to Azure DevOps. Error: $_"
         }
 
-        if ($projects.count -le 0) {
+        if ($projectsArray.count -le 0) {
             Write-Host "Project List is empty. Query source for list of projects and prompt if each project should be migrated" 
             $projectList = (GetListOfProjects $sourceOrg $sourcePAT)
             foreach ($project in $projectList.value) {
@@ -423,20 +432,20 @@ try {
                     $obj = New-Object psobject
                     $obj | Add-Member -type NoteProperty -name "source" -Value "$($project.name)"
                     $obj | Add-Member -type NoteProperty -name "target" -Value ""
-                    $projects += $obj
+                    $projectsArray += $obj
                 }
             }
         }
 
-        Write-Verbose "There are $($projects.count) projects to migrate. Show list:"
-        foreach ($p in $projects) {
+        Write-Verbose "There are $($projectsArray.count) projects to migrate. Show list:"
+        foreach ($p in $projectsArray) {
             Write-Verbose "`"$p.source`""
         }
         Write-Verbose "Done showing list of projects to migrate"
 
         # Do the migrations
         pushd "c:\tools\MigrationTools\"
-        foreach ($project in $projects) {
+        foreach ($project in $projectsArray) {
             # NOTE: ALWAYS migrate code first before migrating work items so the links are fixed.
             $sourceProject = $project.source
             if ([string]::IsNullOrWhiteSpace($targetProject)) {
