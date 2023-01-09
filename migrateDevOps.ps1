@@ -1,7 +1,7 @@
 param([string]$sourceOrg, [string]$sourcePAT, 
     [string]$targetOrg, [string]$targetPAT, 
     [string]$projects,
-    [switch]$getProjectList = $false, [switch]$verbose = $false, [switch]$test = $false)
+    [switch]$getProjectList = $false, [switch]$verbose = $false, [switch]$WhatIf = $false, [switch]$skipRepos = $false, [switch]$skipWorkItems = $false)
 
 #####################################
 # Variables
@@ -30,11 +30,25 @@ switch ($getProjectList) {
         Write-Verbose "Get Source Project List is true"
     }    
 }
-[bool]$onlyTest = $false
-switch ($test) {    
+$originalWhatIfPreference = $WhatIfPreference
+switch ($WhatIf) {    
     $true {
-        $onlyTest = $true
-        Write-Verbose "Test only without migrating"
+        $WhatIfPreference = $true
+        Write-Verbose "WhatIf set to true to test without performing destructive commands"
+    }    
+}
+[bool]$migrateRepos = $true
+switch ($skipRepos) {    
+    $true {
+        $migrateRepos = $false
+        Write-Verbose "Skipping Repository Migration"
+    }    
+}
+[bool]$migrateWorkItems = $true
+switch ($skipWorkItems) {    
+    $true {
+        $migrateWorkItems = $false
+        Write-Verbose "Skipping Work Item Migration"
     }    
 }
 if ($projects.Length -gt 0) {
@@ -139,26 +153,6 @@ function UpdateRemainingConfigFile([string] $templateFile, [string] $destFile, [
     (Get-Content $destFile).Replace("AND [System.ID] < $specialMaxValue AND", "AND") | Set-Content $destFile
 
     Write-Verbose "$destFile config file updated"
-}
-
-function LoginAzureDevOps([string]$whichOne, [string]$org, [string]$token) {
-    # Clear credential for all organizations
-    # Write-Verbose "Clear Azure DevOps credentials"
-    # cmd /c C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az devops logout 2>&1 | Out-Null
-
-    # Log in specific organization with token
-    Write-Verbose "Log into $whichOne Azure DevOps"
-    # $env:AZURE_DEVOPS_EXT_PAT = $token
-    echo $token | cmd /c C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az devops login --organization=$org
-
-    # Verify connected
-    Write-Verbose "Verify login to $whichOne by checking if projects are found."
-    $projectList = $(cmd /c C:\"""Program Files (x86)\Microsoft SDKs"""\Azure\CLI2\wbin\az devops project list --organization=$org)
-    if ([string]::IsNullOrWhiteSpace($projectList)) {
-        Write-Warning "Project list is empty for $org"
-        throw "Failed to connect to $whichOne because project list is empty for $org"
-    }
-    Write-Verbose "Login successful"
 }
 
 function GetListOfProjects([string]$org, [string]$token) {
@@ -323,6 +317,62 @@ function QueryRemainingResultCount([string]$org, [string]$token, [string]$projec
     }
 }
 
+function Invoke-Process([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$FilePath, 
+    [Parameter()][ValidateNotNullOrEmpty()][string]$ArgumentList) {
+    Write-Verbose "Invoke process `"$FilePath`" with arguments `"$ArgumentList`"" 
+    $ErrorActionPreference = 'Stop'
+
+    try {
+        $stdOutTempFile = "$env:TEMP\$((New-Guid).Guid)"
+        Write-Verbose "stdOutTempFile: $stdOutTempFile"
+        $stdErrTempFile = "$env:TEMP\$((New-Guid).Guid)"
+        Write-Verbose "stdErrTempFile: $stdErrTempFile"
+
+        $startProcessParams = @{
+            FilePath               = $FilePath
+            ArgumentList           = $ArgumentList
+            RedirectStandardError  = $stdErrTempFile
+            RedirectStandardOutput = $stdOutTempFile
+            Wait                   = $true;
+            PassThru               = $true;
+            NoNewWindow            = $true;
+        }
+        
+        Write-Verbose "Start process"
+        $cmd = Start-Process @startProcessParams
+        Write-Verbose "Process done"
+
+        $cmdOutput = Get-Content -Path $stdOutTempFile -Raw
+        $cmdError = Get-Content -Path $stdErrTempFile -Raw
+        if ($cmd.ExitCode -ne 0) {
+            if ($cmdError) {
+                throw $cmdError.Trim()
+            }
+            if ($cmdOutput) {
+                throw $cmdOutput.Trim()
+            }
+        }
+        else {
+            if ($verbose) {
+                if ([string]::IsNullOrEmpty($cmdOutput) -eq $false) {
+                    Write-Output $cmdOutput
+                }
+                if ([string]::IsNullOrEmpty($cmdError) -eq $false) {
+                    Write-Output $cmdError
+                }
+            }
+        }
+
+        Write-Verbose "Done invoking process"
+    }
+    catch {
+        $PSCmdlet.ThrowTerminatingError($_)
+    }
+    finally {
+        Remove-Item -Path $stdOutTempFile, $stdErrTempFile -Force -ErrorAction Ignore
+    }
+}
+
 function InstallDependencies([string] $whichOne) {
     $alreadyInstalled = $true
     Write-Verbose "Install dependencies"
@@ -362,21 +412,6 @@ function InstallDependencies([string] $whichOne) {
         }
     }
     Write-Verbose "git Installed"
-
-    # # Install azure cli if not installed
-    # if (! (test-path -PathType container "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\")) {
-    #     $alreadyInstalled = $false
-    #     Write-Verbose "Install azure-cli"
-    #     choco install -y azure-cli
-    #     Start-Sleep 5
-    #     C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az extension add --name azure-devops
-    #     Start-Sleep 5
-    #     if (! (test-path -PathType container "C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin\")) {
-    #         Write-Warning "azure-cli still not installed."
-    #         throw "azure-cli not installed"
-    #     }
-    # }
-    # Write-Verbose "azure-cli and devops extension Installed"
 
     Write-Verbose "Dependencies Installed"
     return $alreadyInstalled
@@ -534,179 +569,201 @@ try {
             }
             write-host "*** PROJECT: `"$sourceProject`""
 
-            if (Test-Path $sourceProject) {
-                Remove-Item "$sourceProject" -Recurse -Force
-            }
-            mkdir "$sourceProject" | Out-Null
-            pushd "$sourceProject"
-            # Migrate git repos
-            $repos = (GetListOfRepos $sourceOrg $sourcePAT $sourceProject)
-            Write-Verbose "There are $($repos.value.count) repos for `"$sourceProject`""
-            foreach ($repo in $repos.value) {
-                $repoName = $repo.name
-                write-host "Migrate repo: `"$repoName`""
+            if ($migrateRepos) {
+                if (Test-Path $sourceProject) {
+                    Remove-Item "$sourceProject" -Recurse -Force
+                }
+                mkdir "$sourceProject" | Out-Null
+                pushd "$sourceProject"
+                # Migrate git repos
+                $repos = (GetListOfRepos $sourceOrg $sourcePAT $sourceProject)
+                Write-Verbose "There are $($repos.value.count) repos for `"$sourceProject`""
+                foreach ($repo in $repos.value) {
+                    $repoName = $repo.name
+                    write-host "Migrate repo: `"$repoName`""
                 
-                # Login to source org
-                # LoginAzureDevOps "Source" $sourceOrg $sourcePAT
+                    # Login to source org
+                    # LoginAzureDevOps "Source" $sourceOrg $sourcePAT
 
-                Write-Verbose "git clone: `"$repoName`""
-                if ($verbose) {
-                    C:\"Program Files"\Git\cmd\git.exe clone --bare --mirror --progress --verbose $repo.remoteUrl $repoName
-                }
-                else {
-                    C:\"Program Files"\Git\cmd\git.exe clone --bare --mirror $repo.remoteUrl $repoName 2>&1 | Out-Null
-                }
-                if (! (test-path -PathType container (Join-Path -Path $pwd -ChildPath "$repoName"))) {
-                    Write-Error "Folder `"$repoName`" does not exist so clone failed."
-                    Read-Host -Prompt "Press ENTER to continue after fatal error."
-                }
-                Write-Verbose "Done git clone `"$repoName`""
-
-                pushd "$repoName"
-
-                # Login to target org
-                # LoginAzureDevOps "Target" $targetOrg $targetPAT
-
-                Write-Verbose "Create target repo: `"$repoName`""
-                if ($onlyTest -eq $false) {
-                    $newRepoInfo = (CreateRepo $targetOrg $targetPAT $targetProject $repoName)
-                }
-                else {
-                    Write-Verbose "Test Only: Mock creating repo `"$repoName`" in Target"
-                }
-                Write-Verbose "Done creating target repo: `"$repoName`""
-
-                Write-Verbose "git push: `"$repoName`""
-                if ($onlyTest -eq $false) {
-                    if ($verbose) {
-                        C:\"Program Files"\Git\cmd\git.exe push --mirror --progress --verbose $newRepoInfo.remoteUrl
+                    Write-Verbose "git clone: `"$repoName`""
+                    try {
+                        Invoke-Process -FilePath "C:\Program Files\Git\cmd\git.exe" -ArgumentList "clone --bare --mirror --progress --verbose $($repo.remoteUrl) `"$repoName`"" | Tee-Object -Variable result
                     }
-                    else {
-                        C:\"Program Files"\Git\cmd\git.exe push --mirror $newRepoInfo.remoteUrl 2>&1 | Out-Null
-                    }
-                    # Verify
-                    Start-Sleep 1 # allow DevOps to recognize the git push
-                    $newRepoDetails = (GetRepoDetails $targetOrg $targetPAT $targetProject $repoName)
-                    if ($newRepoDetails.size -ne $repo.size) {
-                        Write-Warning "Size difference between original and new repo `"$repoName`". Source size = $($repo.size) and Target size = $($newRepoDetails.size)"
+                    catch {
+                        $ex = $_
+                        write-host $result
+                        write-error $ex
                         Read-Host "Press ENTER to continue or Ctrl-C to break"
                     }
-                }
-                else {
-                    Write-Verbose "Test Only: Mock git push"
-                }
-                Write-Verbose "Done git push: `"$repoName`""
-                popd # $repoName
 
-                Remove-Item -Recurse -Force "$repoName"
-                Write-Verbose "Done migrate repo: `"$repoName`""
-            }
+                    if (! (test-path -PathType container (Join-Path -Path $pwd -ChildPath "$repoName"))) {
+                        Write-Error "Folder `"$repoName`" does not exist so clone failed."
+                        Read-Host -Prompt "Press ENTER to continue after fatal error."
+                    }
+                    Write-Verbose "Done git clone `"$repoName`""
 
-            # Logout since we're now done with the az commands
-            # cmd /c C:\"Program Files (x86)\Microsoft SDKs"\Azure\CLI2\wbin\az devops logout 2>&1 | Out-Null
-            Write-Verbose "Done migratating repos for `"$sourceProject`""
+                    pushd "$repoName"
 
-            Write-Host "Migrate work items for `"$sourceProject`""
-            $templateFile = join-path -path $templatePath -childpath "migrateWorkItemsTemplate.json"
-            $success = $false
-            for ($i = 0; $i -le 100000; $i = $i + $workItemBatchSize) {
-                $count = (QueryResultCount $sourceOrg $sourcePAT $sourceProject $i)
-                write-verbose "There are $count work items for batch $i"
-                if ($count -gt 0) {
-                    $destFile = (join-path -path $pwd -ChildPath "migrateWorkItems$($i).json")
-                    UpdateConfigFile $templateFile $destFile $i $($i + $workItemBatchSize)
-                    UpdateRemainingConfigFile $templateFile (join-path -path $pwd -ChildPath "migrateWorkItemsRemaining.json") $($i + $workItemBatchSize)
-                    if ($onlyTest -eq $false) {
-                        Write-Verbose "Migrate work items using $destFile"
-                        c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
-                        if ($? -ne $true) { 
-                            Write-Error "ERROR found step 191!!! Exit"
-                            Read-Host "Press ENTER to continue or Ctrl-C to stop."
-                            #            } else {
-                            #                if ($result -like "*0 Work Items*") {
-                            #                    break
-                            #                }
+                    # Login to target org
+                    # LoginAzureDevOps "Target" $targetOrg $targetPAT
+
+                    Write-Verbose "Create target repo: `"$repoName`""
+                    if ($originalWhatIfPreference -eq $false) {
+                        $newRepoInfo = (CreateRepo $targetOrg $targetPAT $targetProject $repoName)
+                    }
+                    else {
+                        Write-Verbose "Test Only: Mock creating repo `"$repoName`" in Target"
+                    }
+                    Write-Verbose "Done creating target repo: `"$repoName`""
+
+                    Write-Verbose "git push: `"$repoName`""
+                    if ($originalWhatIfPreference -eq $false) {
+                        try {
+                            Invoke-Process -FilePath "C:\Program Files\Git\cmd\git.exe" -ArgumentList "push --mirror --progress --verbose $($newRepoInfo.remoteUrl)" | Tee-Object -Variable result
+                        }
+                        catch {
+                            $ex = $_
+                            write-host $result
+                            write-error $ex
+                            Read-Host "Press ENTER to continue or Ctrl-C to break"
+                        }
+
+                        # Verify
+                        Start-Sleep 1 # allow DevOps to recognize the git push
+                        $newRepoDetails = (GetRepoDetails $targetOrg $targetPAT $targetProject $repoName)
+                        if ($newRepoDetails.size -ne $repo.size) {
+                            Write-Warning "Size difference between original and new repo `"$repoName`". Source size = $($repo.size) and Target size = $($newRepoDetails.size)"
+                            Read-Host "Press ENTER to continue or Ctrl-C to break"
                         }
                     }
                     else {
-                        Write-Verbose "Test Only: Mock migrate work items using $destFile" #TODO: mimic migrate work items
+                        Write-Verbose "Test Only: Mock git push"
                     }
-                }
-                else { 
-                    Write-Verbose "Check remaining count"
-                    $remainingCount = (QueryRemainingResultCount $sourceOrg $sourcePAT $sourceProject $i)
-                    Write-Verbose "There are $remainingCount work items for remaining batch"
-                    if ($remainingCount -lt 10000) {
-                        $success = $true
-                        break
-                    }
-                    else {
-                        # 10,000 is the max number of items returned by DevOps API
-                        Write-Verbose "There are still more than 10,000 work items in the remaining query so continue with batches"
-                    }
-                }
-            }
-            if (! $success) {
-                Write-Warning "Failed to migrate all work items due to max loops"
-                Read-Host "Press ENTER to continue or Ctrl-C to stop."
-            }
+                    Write-Verbose "Done git push: `"$repoName`""
+                    popd # $repoName
 
-            Write-Verbose "Import Remaining Work Items"
-            Write-Verbose "Migrate work items using $(join-path -path $pwd -ChildPath migrateWorkItemsRemaining.json)"
-            if ($onlyTest -eq $false) {
-                c:\tools\MigrationTools\migration.exe execute --config (join-path -path $pwd -ChildPath "migrateWorkItemsRemaining.json") 2>&1 | Tee-Object -Variable result
-                if ($? -ne $true) { 
-                    Write-Error "ERROR found step 204!!! Exit"
-                    Read-Host "Press ENTER to continue or Ctrl-C to stop."
+                    Remove-Item -Recurse -Force "$repoName"
+                    Write-Verbose "Done migrate repo: `"$repoName`""
                 }
+
+                popd # $sourceProject
+                Remove-Item -Recurse -Force "$sourceProject"
+                Write-Verbose "Done migratating repos for `"$sourceProject`""
             }
             else {
-                Write-Verbose "Test Only: Mock migrate work items using $(join-path -path $pwd -ChildPath migrateWorkItemsRemaining.json)" #TODO: mimic migrate work items
+                Write-Verbose "Skipping repository migrations"
             }
 
-            # TODO: Verify
-            Write-Verbose "Done migratating work items for `"$sourceProject`""
+            if ($migrateWorkItems) {
+                if (Test-Path $sourceProject) {
+                    Remove-Item "$sourceProject" -Recurse -Force
+                }
+                mkdir "$sourceProject" | Out-Null
+                pushd "$sourceProject"
 
-            Write-Host "Migrate test plans for `"$sourceProject`""
-            $templateFile = join-path -path $templatePath -childpath "migrateTestPlansTemplate.json"
-            $destFile = (join-path -path $pwd -ChildPath "migrateTestPlans.json")
-            UpdateConfigFile $templateFile $destFile 0
-
-            if ($onlyTest -eq $false) {
-                Write-Verbose "Migrate test plans using $destFile"
-                c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
-                if ($? -ne $true) { 
-                    Write-Error "ERROR found step 227!!! Exit"
+                Write-Host "Migrate work items for `"$sourceProject`""
+                $templateFile = join-path -path $templatePath -childpath "migrateWorkItemsTemplate.json"
+                $success = $false
+                for ($i = 0; $i -le 100000; $i = $i + $workItemBatchSize) {
+                    $count = (QueryResultCount $sourceOrg $sourcePAT $sourceProject $i)
+                    write-verbose "There are $count work items for batch $i"
+                    if ($count -gt 0) {
+                        $destFile = (join-path -path $pwd -ChildPath "migrateWorkItems$($i).json")
+                        UpdateConfigFile $templateFile $destFile $i $($i + $workItemBatchSize)
+                        UpdateRemainingConfigFile $templateFile (join-path -path $pwd -ChildPath "migrateWorkItemsRemaining.json") $($i + $workItemBatchSize)
+                        if ($originalWhatIfPreference -eq $false) {
+                            Write-Verbose "Migrate work items using $destFile"
+                            c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
+                            # $LastExitCode
+                            if (([string]$result).contains(" FTL]") -or ([string]$result).contains(" ERR]")) { 
+                                Write-Error "ERROR while running migration for $destFile"
+                                Read-Host "Press ENTER to continue or Ctrl-C to stop."
+                            }
+                        }
+                        else {
+                            Write-Verbose "Test Only: Mock migrate work items using $destFile" #TODO: mimic migrate work items
+                        }
+                    }
+                    else { 
+                        Write-Verbose "Check remaining count"
+                        $remainingCount = (QueryRemainingResultCount $sourceOrg $sourcePAT $sourceProject $i)
+                        Write-Verbose "There are $remainingCount work items for remaining batch"
+                        if ($remainingCount -lt 10000) {
+                            $success = $true
+                            break
+                        }
+                        else {
+                            # 10,000 is the max number of items returned by DevOps API
+                            Write-Verbose "There are still more than 10,000 work items in the remaining query so continue with batches"
+                        }
+                    }
+                }
+                if (! $success) {
+                    Write-Warning "Failed to migrate all work items due to max loops"
                     Read-Host "Press ENTER to continue or Ctrl-C to stop."
                 }
-            }
-            else {
-                Write-Verbose "Test Only: Mock migrate test plans using $destFile" #TODO: mimic migrate test plans
-            }
-            # TODO: Verify
-            Write-Verbose "Done migratating test plans for `"$sourceProject`""
 
-            Write-Host "Migrate pipelines for `"$sourceProject`""
-            $templateFile = join-path -path $templatePath -childpath "migratePipelinesTemplate.json"
-            $destFile = (join-path -path $pwd -ChildPath "migratePipelines.json")
-            UpdateConfigFile $templateFile $destFile 0
-
-            if ($onlyTest -eq $false) {
-                Write-Verbose "Migrate pipelines using $destFile"
-                c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
-                if ($? -ne $true) { 
-                    Write-Error "ERROR found step 252!!! Exit"
-                    Read-Host "Press ENTER to continue or Ctrl-C to stop."
+                Write-Verbose "Import Remaining Work Items"
+                Write-Verbose "Migrate work items using $(join-path -path $pwd -ChildPath migrateWorkItemsRemaining.json)"
+                if ($originalWhatIfPreference -eq $false) {
+                    c:\tools\MigrationTools\migration.exe execute --config (join-path -path $pwd -ChildPath "migrateWorkItemsRemaining.json") 2>&1 | Tee-Object -Variable result
+                    if (([string]$result).contains(" FTL]") -or ([string]$result).contains(" ERR]")) { 
+                        Write-Error "ERROR while running migration for $destFile"
+                        Read-Host "Press ENTER to continue or Ctrl-C to stop."
+                    }
                 }
+                else {
+                    Write-Verbose "Test Only: Mock migrate work items using $(join-path -path $pwd -ChildPath migrateWorkItemsRemaining.json)" #TODO: mimic migrate work items
+                }
+
+                # TODO: Verify
+                Write-Verbose "Done migratating work items for `"$sourceProject`""
+
+                Write-Host "Migrate test plans for `"$sourceProject`""
+                $templateFile = join-path -path $templatePath -childpath "migrateTestPlansTemplate.json"
+                $destFile = (join-path -path $pwd -ChildPath "migrateTestPlans.json")
+                UpdateConfigFile $templateFile $destFile 0
+
+                if ($originalWhatIfPreference -eq $false) {
+                    Write-Verbose "Migrate test plans using $destFile"
+                    c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
+                    if (([string]$result).contains(" FTL]") -or ([string]$result).contains(" ERR]")) { 
+                        Write-Error "ERROR while running migration for $destFile"
+                        Read-Host "Press ENTER to continue or Ctrl-C to stop."
+                    }
+                }
+                else {
+                    Write-Verbose "Test Only: Mock migrate test plans using $destFile" #TODO: mimic migrate test plans
+                }
+                # TODO: Verify
+                Write-Verbose "Done migratating test plans for `"$sourceProject`""
+
+                Write-Host "Migrate pipelines for `"$sourceProject`""
+                $templateFile = join-path -path $templatePath -childpath "migratePipelinesTemplate.json"
+                $destFile = (join-path -path $pwd -ChildPath "migratePipelines.json")
+                UpdateConfigFile $templateFile $destFile 0
+
+                if ($originalWhatIfPreference -eq $false) {
+                    Write-Verbose "Migrate pipelines using $destFile"
+                    c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
+                    if (([string]$result).contains(" FTL]") -or ([string]$result).contains(" ERR]")) { 
+                        Write-Error "ERROR while running migration for $destFile"
+                        Read-Host "Press ENTER to continue or Ctrl-C to stop."
+                    }
+                }
+                else {
+                    Write-Verbose "Test Only: Mock migrate pipelines using $destFile" #TODO: mimic migrate pipelines
+                }
+                # TODO: Verify
+                Write-Verbose "Done migratating pipelines for `"$sourceProject`""
+
+                popd # $sourceProject
+                Remove-Item -Recurse -Force "$sourceProject"
             }
             else {
-                Write-Verbose "Test Only: Mock migrate pipelines using $destFile" #TODO: mimic migrate pipelines
+                Write-Verbose "Skipping work item migrations"
             }
-            # TODO: Verify
-            Write-Verbose "Done migratating pipelines for `"$sourceProject`""
-
-            popd # $sourceProject
-            Remove-Item -Recurse -Force "$sourceProject"
+        
             write-host "Done migratating `"$sourceProject`""
         }
 
@@ -724,5 +781,6 @@ catch {
 }
 finally {
     $env:AZURE_DEVOPS_EXT_PAT = $originalEnvAzureDevOpsExtPAT
+    $WhatIfPreference = $originalWhatIfPreference
     $VerbosePreference = $originalVerbose
 }
