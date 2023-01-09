@@ -52,20 +52,6 @@ switch ($skipWorkItems) {
         Write-Verbose "Skipping Work Item Migration"
     }    
 }
-[bool]$migrateRepos = $true
-switch ($skipRepos) {    
-    $true {
-        $migrateRepos = $false
-        Write-Verbose "Skipping Repository Migration"
-    }    
-}
-[bool]$migrateWorkItems = $true
-switch ($skipWorkItems) {    
-    $true {
-        $migrateWorkItems = $false
-        Write-Verbose "Skipping Work Item Migration"
-    }    
-}
 if ($projects.Length -gt 0) {
     # projects were passed as a parameter so convert from json string
     try {
