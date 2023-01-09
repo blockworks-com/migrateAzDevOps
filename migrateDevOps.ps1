@@ -370,7 +370,7 @@ function Invoke-Process([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]
         $PSCmdlet.ThrowTerminatingError($_)
     }
     finally {
-        Remove-Item -Path $stdOutTempFile, $stdErrTempFile -Force -ErrorAction Ignore
+        Remove-Item -Path $stdOutTempFile, $stdErrTempFile -Force -WhatIf:$false -ErrorAction Ignore
     }
 }
 
@@ -572,9 +572,9 @@ try {
 
             if ($migrateRepos) {
                 if (Test-Path $sourceProject) {
-                    Remove-Item "$sourceProject" -Recurse -Force
+                    Remove-Item "$sourceProject" -Recurse -Force -WhatIf:$false
                 }
-                mkdir "$sourceProject" | Out-Null
+                mkdir "$sourceProject" -WhatIf:$false | Out-Null
                 Push-Location "$sourceProject"
                 # Migrate git repos
                 $repos = (GetListOfRepos $sourceOrg $sourcePAT $sourceProject)
@@ -643,12 +643,12 @@ try {
                     Write-Verbose "Done git push: `"$repoName`""
                     Pop-Location # $repoName
 
-                    Remove-Item -Recurse -Force "$repoName"
+                    Remove-Item -Recurse -Force "$repoName" -WhatIf:$false
                     Write-Verbose "Done migrate repo: `"$repoName`""
                 }
 
                 Pop-Location # $sourceProject
-                Remove-Item -Recurse -Force "$sourceProject"
+                Remove-Item -Recurse -Force "$sourceProject" -WhatIf:$false
                 Write-Verbose "Done migratating repos for `"$sourceProject`""
             }
             else {
@@ -657,9 +657,9 @@ try {
 
             if ($migrateWorkItems) {
                 if (Test-Path $sourceProject) {
-                    Remove-Item "$sourceProject" -Recurse -Force
+                    Remove-Item "$sourceProject" -Recurse -Force -WhatIf:$false
                 }
-                mkdir "$sourceProject" | Out-Null
+                mkdir "$sourceProject" -WhatIf:$false | Out-Null
                 Push-Location "$sourceProject"
 
                 Write-Host "Migrate work items for `"$sourceProject`""
@@ -761,7 +761,7 @@ try {
                 Write-Verbose "Done migratating pipelines for `"$sourceProject`""
 
                 Pop-Location # $sourceProject
-                Remove-Item -Recurse -Force "$sourceProject"
+                Remove-Item -Recurse -Force -WhatIf:$false "$sourceProject"
             }
             else {
                 Write-Verbose "Skipping work item migrations"
