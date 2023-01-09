@@ -462,16 +462,6 @@ try {
         throw "Failed to provide valid variable values. Error: $_"
     }
 
-    try {
-        # Verify Source and Target urls and personal access tokens
-        Write-Verbose "Verify Source and Target urls and personal access tokens by logging into both."
-        # LoginAzureDevOps "Target" $targetOrg $targetPAT
-        # LoginAzureDevOps "Source" $sourceOrg $sourcePAT
-    }
-    catch {
-        throw "Failed to connect to Azure DevOps. Error: $_"
-    }
-
     if ($onlyProjectList) {
         Write-Verbose "Retrieve project list and exit" 
         $projectList = (GetListOfProjects $sourceOrg $sourcePAT)
@@ -484,14 +474,6 @@ try {
         Write-Host $strProjectList
     }
     else {
-        try {
-            # Make sure we are logged into the Source before proceeding
-            # LoginAzureDevOps "Source" $sourceOrg $sourcePAT
-        }
-        catch {
-            throw "Failed to connect to Azure DevOps. Error: $_"
-        }
-
         if ($projectsArray.count -le 0) {
             Write-Host "Project List is empty. Query source for list of projects and prompt if each project should be migrated" 
             $projectList = (GetListOfProjects $sourceOrg $sourcePAT)
@@ -583,9 +565,6 @@ try {
                     $repoName = $repo.name
                     write-host "Migrate repo: `"$repoName`""
                 
-                    # Login to source org
-                    # LoginAzureDevOps "Source" $sourceOrg $sourcePAT
-
                     Write-Verbose "git clone: `"$repoName`""
                     try {
                         Invoke-Process -FilePath "C:\Program Files\Git\cmd\git.exe" -ArgumentList "clone --bare --mirror --progress --verbose $($repo.remoteUrl) `"$repoName`"" | Tee-Object -Variable result
@@ -604,9 +583,6 @@ try {
                     Write-Verbose "Done git clone `"$repoName`""
 
                     Push-Location "$repoName"
-
-                    # Login to target org
-                    # LoginAzureDevOps "Target" $targetOrg $targetPAT
 
                     Write-Verbose "Create target repo: `"$repoName`""
                     if ($originalWhatIfPreference -eq $false) {
