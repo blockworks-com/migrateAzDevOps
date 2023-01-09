@@ -51,6 +51,20 @@ switch ($skipWorkItems) {
         Write-Verbose "Skipping Work Item Migration"
     }    
 }
+[bool]$migrateRepos = $true
+switch ($skipRepos) {    
+    $true {
+        $migrateRepos = $false
+        Write-Verbose "Skipping Repository Migration"
+    }    
+}
+[bool]$migrateWorkItems = $true
+switch ($skipWorkItems) {    
+    $true {
+        $migrateWorkItems = $false
+        Write-Verbose "Skipping Work Item Migration"
+    }    
+}
 if ($projects.Length -gt 0) {
     # projects were passed as a parameter so convert from json string
     try {
@@ -671,6 +685,7 @@ try {
                         $destFile = (join-path -path $pwd -ChildPath "migrateWorkItems$($i).json")
                         UpdateConfigFile $templateFile $destFile $i $($i + $workItemBatchSize)
                         UpdateRemainingConfigFile $templateFile (join-path -path $pwd -ChildPath "migrateWorkItemsRemaining.json") $($i + $workItemBatchSize)
+
                         if ($originalWhatIfPreference -eq $false) {
                             Write-Verbose "Migrate work items using $destFile"
                             c:\tools\MigrationTools\migration.exe execute --config $destFile 2>&1 | Tee-Object -Variable result
@@ -705,6 +720,7 @@ try {
 
                 Write-Verbose "Import Remaining Work Items"
                 Write-Verbose "Migrate work items using $(join-path -path $pwd -ChildPath migrateWorkItemsRemaining.json)"
+
                 if ($originalWhatIfPreference -eq $false) {
                     c:\tools\MigrationTools\migration.exe execute --config (join-path -path $pwd -ChildPath "migrateWorkItemsRemaining.json") 2>&1 | Tee-Object -Variable result
                     if (([string]$result).contains(" FTL]") -or ([string]$result).contains(" ERR]")) { 
