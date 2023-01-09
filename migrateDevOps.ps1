@@ -1,7 +1,8 @@
 param([string]$sourceOrg, [string]$sourcePAT, 
     [string]$targetOrg, [string]$targetPAT, 
     [string]$projects,
-    [switch]$getProjectList = $false, [switch]$verbose = $false, [switch]$WhatIf = $false, [switch]$skipRepos = $false, [switch]$skipWorkItems = $false)
+    [switch]$getProjectList = $false, [switch]$verbose = $false, [switch]$WhatIf = $false, 
+    [switch]$skipRepos = $false, [switch]$skipWorkItems = $false)
 
 #####################################
 # Variables
@@ -395,7 +396,7 @@ function InstallDependencies([string] $whichOne) {
     if (! (test-path -PathType container "C:\ProgramData\chocolatey\bin")) {
         $alreadyInstalled = $false
         Write-Verbose "Install Chocolately"
-        Set-ExecutionPolicy Bypass -Scope Process -Force; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
+        Set-ExecutionPolicy Bypass -Scope Process -Force; Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
         if (! (test-path -PathType container "C:\ProgramData\chocolatey\bin")) {
             Write-Warning "Chocolatey still not installed."
             throw "Chocolatey not installed"
@@ -569,7 +570,7 @@ try {
         }
 
         # Do the migrations
-        pushd "c:\tools\MigrationTools\"
+        Push-Location "c:\tools\MigrationTools\"
         foreach ($project in $projectsArray) {
             # NOTE: ALWAYS migrate code first before migrating work items so the links are fixed.
             $sourceProject = $project.source
@@ -588,7 +589,7 @@ try {
                     Remove-Item "$sourceProject" -Recurse -Force
                 }
                 mkdir "$sourceProject" | Out-Null
-                pushd "$sourceProject"
+                Push-Location "$sourceProject"
                 # Migrate git repos
                 $repos = (GetListOfRepos $sourceOrg $sourcePAT $sourceProject)
                 Write-Verbose "There are $($repos.value.count) repos for `"$sourceProject`""
@@ -616,7 +617,7 @@ try {
                     }
                     Write-Verbose "Done git clone `"$repoName`""
 
-                    pushd "$repoName"
+                    Push-Location "$repoName"
 
                     # Login to target org
                     # LoginAzureDevOps "Target" $targetOrg $targetPAT
@@ -654,13 +655,13 @@ try {
                         Write-Verbose "Test Only: Mock git push"
                     }
                     Write-Verbose "Done git push: `"$repoName`""
-                    popd # $repoName
+                    Pop-Location # $repoName
 
                     Remove-Item -Recurse -Force "$repoName"
                     Write-Verbose "Done migrate repo: `"$repoName`""
                 }
 
-                popd # $sourceProject
+                Pop-Location # $sourceProject
                 Remove-Item -Recurse -Force "$sourceProject"
                 Write-Verbose "Done migratating repos for `"$sourceProject`""
             }
@@ -673,7 +674,7 @@ try {
                     Remove-Item "$sourceProject" -Recurse -Force
                 }
                 mkdir "$sourceProject" | Out-Null
-                pushd "$sourceProject"
+                Push-Location "$sourceProject"
 
                 Write-Host "Migrate work items for `"$sourceProject`""
                 $templateFile = join-path -path $templatePath -childpath "migrateWorkItemsTemplate.json"
@@ -773,7 +774,7 @@ try {
                 # TODO: Verify
                 Write-Verbose "Done migratating pipelines for `"$sourceProject`""
 
-                popd # $sourceProject
+                Pop-Location # $sourceProject
                 Remove-Item -Recurse -Force "$sourceProject"
             }
             else {
@@ -783,7 +784,7 @@ try {
             write-host "Done migratating `"$sourceProject`""
         }
 
-        popd # c:\tools\MigrationTools\
+        Pop-Location # c:\tools\MigrationTools\
 
         Write-Host ""
         Write-Host "TO-DO:"
